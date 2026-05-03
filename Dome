@@ -1,0 +1,121 @@
+import faiss
+import numpy as np
+from openai import OpenAI
+
+client = OpenAI(api_key="YOUR_API_KEY")
+
+# ===== Memory Agent =====
+class MemoryAgent:
+    def __init__(self):
+        self.dimension = 1536
+        self.index = faiss.IndexFlatL2(self.dimension)
+        self.memories = []
+
+    def embed(self, text):
+        res = client.embeddings.create(
+            model="text-embedding-3-small",
+            input=text
+        )
+        return np.array(res.data[0].embedding, dtype="float32")
+
+    def add_memory(self, text):
+        emb = self.embed(text)
+        self.index.add(np.array([emb]))
+        self.memories.append(text)
+
+    def search(self, query, k=3):
+        if len(self.memories) == 0:
+            return []
+        emb = self.embed(query)
+        D, I = self.index.search(np.array([emb]), k)
+        return [self.memories[i] for i in I[0] if i < len(self.memories)]
+
+
+# ===== Personality Agent =====
+class PersonalityAgent:
+    def __init__(self, personality="傲娇"):
+        self.personality = personality
+
+    def style_prompt(self):
+        styles = {
+            "傲娇": "你是一个嘴硬但其实在意玩家的NPC，说话带点嘲讽但偶尔温柔。",
+            "冷漠": "你是一个冷淡、不太愿意多说话的NPC。",
+            "温柔": "你是一个温柔、关心玩家的NPC。"
+        }
+        return styles.get(self.personality, "")
+
+
+# ===== Decision Agent =====
+class DecisionAgent:
+    def decide(self, player_input):
+        if "攻击" in player_input:
+            return "生气"
+        elif "帮助" in player_input:
+            return "好感+"
+        else:
+            return "普通回应"
+
+
+# ===== NPC 主体 =====
+class NPC:
+    def __init__(self, name="AI NPC"):
+        self.name = name
+        self.memory = MemoryAgent()
+        self.personality = PersonalityAgent("傲娇")
+        self.decision = DecisionAgent()
+
+    def respond(self, player_input):
+        # 1. 检索记忆
+        memories = self.memory.search(player_input)
+
+        # 2. 决策
+        action = self.decision.decide(player_input)
+
+        # 3. 构造 Prompt
+        prompt = f"""
+你是NPC：{self.name}
+
+性格：
+{self.personality.style_prompt()}
+
+历史记忆：
+{memories}
+
+玩家说：
+{player_input}
+
+当前状态：
+{action}
+
+请生成符合性格的自然回复：
+"""
+
+        # 4. LLM 生成
+        res = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.9
+        )
+
+        reply = res.choices[0].message.content
+
+        # 5. 写入记忆
+        self.memory.add_memory(f"玩家说: {player_input}")
+        self.memory.add_memory(f"NPC说: {reply}")
+
+        return reply
+
+
+# ===== 运行 Demo =====
+if __name__ == "__main__":
+    npc = NPC("莉亚")
+
+    print("NPC 已启动（输入 exit 退出）")
+
+    while True:
+        player_input = input("你：")
+        if player_input == "exit":
+            break
+
+        reply = npc.respond(player_input)
+        print("NPC：", reply)
